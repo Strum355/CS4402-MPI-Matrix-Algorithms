@@ -5,21 +5,21 @@
 
 int** alloc_matrix(int n, int m);
 void init_matrix(int n, int** a, int p);
-int** mult_matrix(int n, int** a, int** b);
+int** prod_matrix(int n, int l, int m, int** a, int** b);
 void print_matrix(int n, int m, int** a);
 void extract_matrix(int na, int ** a, int nb, int** b, int row, int col);
 void implant_matrix(int na, int** a, int nb, int** b, int row, int col);
 
-void MPI_Row_split(int n, int size, int** mat_A, int** mat_B);
-void MPI_Col_split(int n, int size, int** mat_A, int** mat_B);
-void MPI_Mult_scatter(int n, int size, int** mat_A, int** mat_B);
+int** MPI_Row_split(int n, int** mat_A, int** mat_B);
+int** MPI_Col_split(int n, int** mat_A, int** mat_B);
 
-int rank;
+void Scatter_elements_A_broadcast_elements_B(int n, int** mat_A, int** mat_B);
+
+int rank, size;
 
 int main(int argc, char **argv)
 {
     int n = 4;
-    int size;
 
     int** mat_A;
     int** mat_B;
@@ -37,29 +37,42 @@ int main(int argc, char **argv)
         printf("\n");
         
         init_matrix(n, mat_B, 2);
+
+        print_matrix(n, n, mat_B);
+        printf("\n");
     }
 
-    printf("normal\n");
-    MPI_Mult_scatter(n, size, mat_A, mat_B);
-    
-    printf("row split\n");
-    MPI_Row_split(n, size, mat_A, mat_B);
-
-    printf("col split\n");
-    MPI_Col_split(n, size, mat_A, mat_B);
+    Scatter_elements_A_broadcast_elements_B(n, mat_A, mat_B);
 
     MPI_Finalize();
 
     return 0;
 }
 
+void Scatter_elements_A_broadcast_elements_B(int n, int** mat_A, int** mat_B) {
+    int** local_a = alloc_matrix(n/size, n);
+    
+    MPI_Scatter(&mat_A[0][0], n*n/size, MPI_INT, &local_a[0][0], n*n/size, MPI_INT, 0, MPI_COMM_WORLD);
+    print_matrix(n/size, n, local_a);
 
-void MPI_Col_split(int n, int size, int** mat_A, int** mat_B) {
+    printf("\n");
+
+    MPI_Bcast(&mat_B[0][0], n*n, MPI_INT, 0, MPI_COMM_WORLD);
+
+    print_matrix(n/size, n,  prod_matrix(n/size, n, n, local_a, mat_B));
+    printf("\n");
+}
+
+
+int** MPI_Col_split(int n, int** mat_A, int** mat_B) {
     MPI_Datatype send_col_type, recv_col_type;
+
+    // sending column type
     MPI_Type_vector(n, 1, n, MPI_INT, &send_col_type);
     MPI_Type_create_resized(send_col_type, 0, sizeof(int), &send_col_type);
     MPI_Type_commit(&send_col_type);
 
+    // recv column type
     MPI_Type_vector(n, 1, n/size, MPI_INT, &recv_col_type);
     MPI_Type_create_resized(recv_col_type, 0, sizeof(int), &recv_col_type);
     MPI_Type_commit(&recv_col_type);
@@ -67,14 +80,18 @@ void MPI_Col_split(int n, int size, int** mat_A, int** mat_B) {
     int** local_mat = alloc_matrix(n, n/size);
 
     MPI_Scatter(&mat_A[0][0], n/size, send_col_type, &local_mat[0][0], n/size, recv_col_type, 0, MPI_COMM_WORLD);
-    print_matrix(n, n/size, local_mat);
-    printf("\n");
+    
+    /* print_matrix(n, n/size, local_mat);
+    printf("\n"); */
+
     MPI_Type_free(&recv_col_type);
     MPI_Type_free(&send_col_type);
+    
+    return local_mat;
 }
 
 
-void MPI_Row_split(int n, int size, int** mat_A, int** mat_B) {
+int** MPI_Row_split(int n, int** mat_A, int** mat_B) {
     MPI_Datatype row_type;
     MPI_Type_contiguous(n, MPI_INT, &row_type);
     MPI_Type_commit(&row_type);
@@ -82,22 +99,13 @@ void MPI_Row_split(int n, int size, int** mat_A, int** mat_B) {
     int** local_mat = alloc_matrix(n/size, n);
     
     MPI_Scatter(&mat_A[0][0], n/size, row_type, &local_mat[0][0], n/size, row_type, 0, MPI_COMM_WORLD);
-    print_matrix(n/size, n, local_mat);
-    printf("\n");
+
+    /* print_matrix(n/size, n, local_mat);
+    printf("\n"); */
+
     MPI_Type_free(&row_type);
+    return local_mat;
 }
-
-
-void MPI_Mult_scatter(int n, int size, int** mat_A, int** mat_B) {
-    int** local_mat = alloc_matrix(n/size, n);
-    
-    printf("size: %d rank: %d\n", n, rank);
-    MPI_Scatter(&mat_A[0][0], n*n/size, MPI_INT, &local_mat[0][0], n*n/size, MPI_INT, 0, MPI_COMM_WORLD);
-
-    print_matrix(n/size, n, local_mat);
-    printf("\n");
-}
-
 
 int** alloc_matrix(int rows, int cols) {
     int* aa = (int*)calloc(rows*cols, sizeof(int));
@@ -121,18 +129,29 @@ void init_matrix(int n, int** a, int p) {
     return;
 }
 
-int** mult_matrix(int n, int** a, int** b) {
-    int** c = alloc_matrix(n, n);
+/*
+    n - number of rows of a
+    l - number of columns of a // the matrix b must have l rows
+    m - number of columns of b
 
-    for(int i = 0; i < n; i++) {
-        for(int j = 0; j < n; j++) {
-            c[i][j]=0;
+    a - the first matrix
+    b - the second matrix
+*/
+int** prod_matrix(int n, int l, int m, int** a, int** b) {
+	int** c = alloc_matrix(n, m);
 
-            for(int k = 0; k < n; k++)
-                c[i][j] = c[i][j]+a[i][k]*b[k][j];
+	for(int i = 0; i < n; i++) {
+        for(int j = 0; j < m; j++){
+
+            c[i][j] = 0;
+
+            for(int k = 0; k < l; k++){
+                c[i][j] = c[i][j] + a[i][k] * b[k][j];
+            }
         }
-    }
-    return c;
+	}
+
+	return c;
 }
 
 void print_matrix(int rows, int cols, int** a) {
