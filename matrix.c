@@ -39,14 +39,12 @@ int main(int argc, char **argv)
         init_matrix(n, mat_B, 2);
     }
 
-
-    //MPI_Mult_scatter(n, size, mat_A, mat_B);
+    printf("normal\n");
+    MPI_Mult_scatter(n, size, mat_A, mat_B);
     
-    //printf("row split\n");
-    //MPI_Row_split(n, size, mat_A, mat_B);
+    printf("row split\n");
+    MPI_Row_split(n, size, mat_A, mat_B);
 
-    fflush(stdout);
-    MPI_Barrier(MPI_COMM_WORLD);
     printf("col split\n");
     MPI_Col_split(n, size, mat_A, mat_B);
 
@@ -69,7 +67,7 @@ void MPI_Col_split(int n, int size, int** mat_A, int** mat_B) {
     int** local_mat = alloc_matrix(n, n/size);
 
     MPI_Scatter(&mat_A[0][0], n/size, send_col_type, &local_mat[0][0], n/size, recv_col_type, 0, MPI_COMM_WORLD);
-    print_matrix(n/size, n, local_mat);
+    print_matrix(n, n/size, local_mat);
     printf("\n");
     MPI_Type_free(&recv_col_type);
     MPI_Type_free(&send_col_type);
@@ -84,24 +82,19 @@ void MPI_Row_split(int n, int size, int** mat_A, int** mat_B) {
     int** local_mat = alloc_matrix(n/size, n);
     
     MPI_Scatter(&mat_A[0][0], n/size, row_type, &local_mat[0][0], n/size, row_type, 0, MPI_COMM_WORLD);
-    print_matrix(n, n/size, local_mat);
+    print_matrix(n/size, n, local_mat);
     printf("\n");
     MPI_Type_free(&row_type);
 }
 
 
 void MPI_Mult_scatter(int n, int size, int** mat_A, int** mat_B) {
-    int** local_mat = alloc_matrix(n, n/size);
+    int** local_mat = alloc_matrix(n/size, n);
     
-    printf("size: %d\n", n);
+    printf("size: %d rank: %d\n", n, rank);
     MPI_Scatter(&mat_A[0][0], n*n/size, MPI_INT, &local_mat[0][0], n*n/size, MPI_INT, 0, MPI_COMM_WORLD);
-    //MPI_Bcast(&mat_B[0][0], n*n, MPI_INT, 0, MPI_COMM_WORLD);
 
-    print_matrix(n, n/size, local_mat);
-    printf("\n");
-    MPI_Barrier(MPI_COMM_WORLD);
-
-    print_matrix(n, n, mat_B);
+    print_matrix(n/size, n, local_mat);
     printf("\n");
 }
 
@@ -142,18 +135,9 @@ int** mult_matrix(int n, int** a, int** b) {
     return c;
 }
 
-void print_mat_alt(int n, int m, int** a) {
-    for(int i = 0; i < m * n; i++) {
-        printf(" %d ", a[0][i]);
-        /* if(i%(m+1) == 0 && i != 0) {
-            printf("\n");
-        } */
-    }
-}
-
-void print_matrix(int n, int m, int** a) {
-    for(int i = 0; i < m; i++) {
-        for(int j = 0; j < n; j++) {
+void print_matrix(int rows, int cols, int** a) {
+    for(int i = 0; i < rows; i++) {
+        for(int j = 0; j < cols; j++) {
             printf(" %d ",a[i][j]);
         }
         printf("\n");
