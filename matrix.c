@@ -6,6 +6,7 @@
 int** alloc_matrix(int n, int m);
 void init_matrix(int n, int** a, int p);
 int** prod_matrix(int n, int l, int m, int** a, int** b);
+int** add_matrix(int n, int m, int** a, int** b);
 int** pseudo_prod_matrix(int n, int l, int m, int** a, int** b);
 void print_matrix(int n, int m, int** a);
 void extract_matrix(int na, int ma, int ** a, int nb, int mb, int ** b, int row, int col);
@@ -47,16 +48,14 @@ int main(int argc, char **argv)
         printf("\n");
     }
 
-    /* Scatter_elements_A_broadcast_elements_B(n, mat_A, mat_B);
-
+    Scatter_elements_A_broadcast_elements_B(n, mat_A, mat_B);
     MPI_Barrier(MPI_COMM_WORLD);
-
     Scatter_rows_A_broadcast_rows_B(n, mat_A, mat_B);
-
+    MPI_Barrier(MPI_COMM_WORLD);
     Scatter_rows_A_broadcast_rows_B_transposed(n, mat_A, mat_B);
-
-    Broadcast_cols_A_scatter_cols_b(n, mat_A, mat_B);*/
-
+    MPI_Barrier(MPI_COMM_WORLD);
+    Broadcast_cols_A_scatter_cols_b(n, mat_A, mat_B);
+    MPI_Barrier(MPI_COMM_WORLD);
     Cannon(n, mat_A, mat_B);
 
     MPI_Finalize();
@@ -125,7 +124,10 @@ void Scatter_rows_A_broadcast_rows_B_transposed(int n, int** mat_A, int** mat_B)
     int** gathered_mult = alloc_matrix(n, n);
     MPI_Gather(&mult[0][0], n/size, row_type, &gathered_mult[0][0], n/size, row_type, 0, MPI_COMM_WORLD);
 
-    if(rank == 0)print_matrix(n, n, gathered_mult);
+    if(rank == 0) {
+        print_matrix(n, n, gathered_mult);
+        printf("\n");
+    }
 }
 
 void Broadcast_cols_A_scatter_cols_b(int n, int** mat_A, int** mat_B) {
@@ -161,6 +163,11 @@ void Cannon(int n, int** mat_A, int** mat_B) {
     MPI_Comm grid;
     
     int p = (int)sqrt(size);
+    if(p * p != size) {
+        printf("square grid not posible with %d procs\n", size);
+        MPI_Finalize();
+        return;
+    }
     dims[0] = dims[1] = p;
     periods[0] = periods[1] = 1;
 
@@ -180,28 +187,78 @@ void Cannon(int n, int** mat_A, int** mat_B) {
     MPI_Cart_rank(grid, downCoords, &downRank);
 
     int** local_a = alloc_matrix(n/p, n/p);
+    int** local_b = alloc_matrix(n/p, n/p);
 
-    if(rank == 0) {
+    // pre-comp section to init every proc with starting data
+    {
+        if(rank == 0) {
+            for(int i = 0; i < p; i++) {
+                for(int j = 0; j < p; j++) {
+                    extract_matrix(n, n, mat_A, n/p, n/p, local_a, i*n/p,  (j-i+p)%p*n/p);
+
+                    recvCoords[0] = j;
+                    recvCoords[1] = i;
+                    MPI_Cart_rank(grid, recvCoords, &recvRank);
+
+                    MPI_Request _;
+                    MPI_Isend(&local_a[0][0], n*n/(p*p), MPI_INT, recvRank, 1, MPI_COMM_WORLD, &_);
+
+                    extract_matrix(n, n, mat_B, n/p, n/p, local_b, (i-j+p)%p*n/p, j*n/p);
+                    MPI_Cart_rank(grid, recvCoords, &recvRank);
+                    MPI_Isend(&local_b[0][0], n*n/(p*p), MPI_INT, recvRank, 2, MPI_COMM_WORLD, &_);
+                }
+            }
+        }
+
+        MPI_Request _;
+        MPI_Irecv(&local_a[0][0], n*n/(p*p), MPI_INT, 0, 1, MPI_COMM_WORLD, &_);
+        MPI_Irecv(&local_b[0][0], n*n/(p*p), MPI_INT, 0, 2, MPI_COMM_WORLD, &_);
+
+        
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    // multiplying, accumulating and shifting
+    int** local_c = alloc_matrix(n/p, n/p);
+    {
+        MPI_Cart_rank(grid, leftCoords, &leftRank);
+        MPI_Cart_rank(grid, rightCoords, &rightRank);
+        MPI_Cart_rank(grid, upCoords, &upRank);
+        MPI_Cart_rank(grid, downCoords, &downRank);
+
         for(int i = 0; i < p; i++) {
-            for(int j = 0; j < p; j++) {
-                extract_matrix(n, n, mat_A, n/p, n/p, local_a, i*n/p, j*n/p);
-                /* print_matrix(n/p, n/p, local_a);
-                printf("\n"); */
-                recvCoords[0] = i;
-                recvCoords[1] = j;
-                MPI_Cart_rank(grid, recvCoords, &recvRank);
-                MPI_Request req;
-                MPI_Status status;
-                MPI_Isend(&mat_B[0][0], n*n/size, MPI_INT, recvRank, 1, MPI_COMM_WORLD, &req);
-                MPI_Wait(&req, &status);
-                printf("%d\n", status.MPI_SOURCE);
+            local_c = add_matrix(n/p, n/p, local_c, prod_matrix(n/p, n/p, n/p, local_a, local_b));
+            MPI_Sendrecv_replace(&local_a[0][0], n*n/(p*p), MPI_INT, leftRank, 1, rightRank, 1, grid, MPI_STATUS_IGNORE);
+            MPI_Sendrecv_replace(&local_b[0][0], n*n/(p*p), MPI_INT, upRank, 2, downRank, 2, grid, MPI_STATUS_IGNORE);
+        }
+
+    }
+
+    int** result_matrix = alloc_matrix(n, n);
+
+    // gather results from all partitions and implant into result_matrix
+    {
+        MPI_Request _;
+        MPI_Isend(&local_c[0][0], n*n/(p*p), MPI_INT, 0, rank, MPI_COMM_WORLD, &_);
+        MPI_Barrier(MPI_COMM_WORLD);
+        if(rank == 0) {
+            for(int i = 0; i < size; i++) {
+                int** local_d = alloc_matrix(n/p, n/p);
+                MPI_Irecv(&local_d[0][0], n*n/(p*p), MPI_INT, i, i, MPI_COMM_WORLD, &_);
+                
+                int coords[2];
+                MPI_Cart_coords(grid, i, size, coords);
+                implant_matrix(n, n, result_matrix, n/p, n/p, local_d, coords[1]*(n/p), coords[0]*(n/p));
             }
         }
     }
 
     if(rank == 0) {
-        print_matrix(n*n/size, n*n/size, mat_B);
+        printf("\n");
+        print_matrix(n, n, result_matrix);
     }
+
 }
 
 int** alloc_matrix(int rows, int cols) {
@@ -264,6 +321,16 @@ int** pseudo_prod_matrix(int n, int l, int m, int** a, int** b) {
     return c;
 }
 
+int** add_matrix(int n, int m, int** a, int** b) {
+    int** sum = alloc_matrix(n, m);
+    for(int i = 0; i < n; i++) {
+        for(int j = 0; j < m; j++) {
+            sum[i][j] = a[i][j] + b[i][j];
+        }
+    }
+    return sum;
+}
+
 void print_matrix(int rows, int cols, int** a) {
     for(int i = 0; i < rows; i++) {
         for(int j = 0; j < cols; j++) {
@@ -275,7 +342,7 @@ void print_matrix(int rows, int cols, int** a) {
 
 void extract_matrix(int na, int ma, int** a, int nb, int mb, int** b, int row, int col) {
     if(na < row + nb || na < col + mb) {
-        printf("Impossible to extract");
+        printf("Impossible to extract\n");
         return;
     }
 
@@ -286,7 +353,7 @@ void extract_matrix(int na, int ma, int** a, int nb, int mb, int** b, int row, i
 
 void implant_matrix(int na, int ma, int ** a, int nb, int mb, int ** b, int row, int col) {
     if(na < row + nb || na < col + mb) {
-        printf("Impossible to extract");
+        printf("Impossible to implant\n");
         return;
     }
 
