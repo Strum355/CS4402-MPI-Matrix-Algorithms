@@ -8,14 +8,15 @@ void init_matrix(int n, int** a, int p);
 int** prod_matrix(int n, int l, int m, int** a, int** b);
 int** pseudo_prod_matrix(int n, int l, int m, int** a, int** b);
 void print_matrix(int n, int m, int** a);
-void extract_matrix(int na, int ** a, int nb, int** b, int row, int col);
-void implant_matrix(int na, int** a, int nb, int** b, int row, int col);
+void extract_matrix(int na, int ma, int ** a, int nb, int mb, int ** b, int row, int col);
+void implant_matrix(int na, int ma, int ** a, int nb, int mb, int ** b, int row, int col);
 int** trans_matrix(int n, int m, int** a);
 
 void Scatter_elements_A_broadcast_elements_B(int n, int** mat_A, int** mat_B);
 void Scatter_rows_A_broadcast_rows_B(int n, int** mat_A, int** mat_B);
 void Scatter_rows_A_broadcast_rows_B_transposed(int n, int** mat_A, int** mat_B);
 void Broadcast_cols_A_scatter_cols_b(int n, int** mat_A, int** mat_B);
+void Cannon(int n, int** mat_A, int** mat_B);
 
 int rank, size;
 
@@ -55,6 +56,8 @@ int main(int argc, char **argv)
     Scatter_rows_A_broadcast_rows_B_transposed(n, mat_A, mat_B);
 
     Broadcast_cols_A_scatter_cols_b(n, mat_A, mat_B);*/
+
+    Cannon(n, mat_A, mat_B);
 
     MPI_Finalize();
 
@@ -151,6 +154,56 @@ void Broadcast_cols_A_scatter_cols_b(int n, int** mat_A, int** mat_B) {
     if(rank == 0) print_matrix(n, n, gathered_mult);
 }
 
+void Cannon(int n, int** mat_A, int** mat_B) {
+    int dims[2], periods[2], coords[2], leftCoords[2], rightCoords[2], upCoords[2], downCoords[2], sendCoords[2], recvCoords[2];
+    int leftRank, rightRank, upRank, downRank, recvRank, sendRank;
+
+    MPI_Comm grid;
+    
+    int p = (int)sqrt(size);
+    dims[0] = dims[1] = p;
+    periods[0] = periods[1] = 1;
+
+    MPI_Cart_create(MPI_COMM_WORLD, 2, dims, periods, 0, &grid);
+
+    MPI_Comm_rank(grid, &rank);
+    MPI_Cart_coords(grid, rank, 2, coords);
+
+    leftCoords[0] = (coords[0] - 1)%p; leftCoords[1] = coords[1];
+    rightCoords[0] = (coords[0] + 1)%p; rightCoords[1] = coords[1];
+    upCoords[0] = coords[0]; upCoords[1] = (coords[1]-1)%p;
+    downCoords[0] = coords[0]; downCoords[1] = (coords[1]+1)%p;
+
+    MPI_Cart_rank(grid, leftCoords, &leftRank);
+    MPI_Cart_rank(grid, rightCoords, &rightRank);
+    MPI_Cart_rank(grid, upCoords, &upRank);
+    MPI_Cart_rank(grid, downCoords, &downRank);
+
+    int** local_a = alloc_matrix(n/p, n/p);
+
+    if(rank == 0) {
+        for(int i = 0; i < p; i++) {
+            for(int j = 0; j < p; j++) {
+                extract_matrix(n, n, mat_A, n/p, n/p, local_a, i*n/p, j*n/p);
+                /* print_matrix(n/p, n/p, local_a);
+                printf("\n"); */
+                recvCoords[0] = i;
+                recvCoords[1] = j;
+                MPI_Cart_rank(grid, recvCoords, &recvRank);
+                MPI_Request req;
+                MPI_Status status;
+                MPI_Isend(&mat_B[0][0], n*n/size, MPI_INT, recvRank, 1, MPI_COMM_WORLD, &req);
+                MPI_Wait(&req, &status);
+                printf("%d\n", status.MPI_SOURCE);
+            }
+        }
+    }
+
+    if(rank == 0) {
+        print_matrix(n*n/size, n*n/size, mat_B);
+    }
+}
+
 int** alloc_matrix(int rows, int cols) {
     int* aa = (int*)calloc(rows*cols, sizeof(int));
     int** a = (int**)calloc(rows, sizeof(int*));
@@ -220,24 +273,24 @@ void print_matrix(int rows, int cols, int** a) {
     }
 }
 
-void extract_matrix(int na, int ** a, int nb, int** b, int row, int col) {
-    if(na<row+nb || na<col+nb) {
+void extract_matrix(int na, int ma, int** a, int nb, int mb, int** b, int row, int col) {
+    if(na < row + nb || na < col + mb) {
         printf("Impossible to extract");
         return;
     }
 
     for(int i = 0; i < nb; i++)
-        for(int j = 0; j < nb; j++)
-            b[i][j] = a[row+i][col+j];
+        for(int j = 0; j < mb; j++)
+            b[i][j] = a[row + i][col + j];
 }
 
-void implant_matrix(int na, int** a, int nb, int** b, int row, int col) {
-    if(na<row+nb || na<col+nb) {
+void implant_matrix(int na, int ma, int ** a, int nb, int mb, int ** b, int row, int col) {
+    if(na < row + nb || na < col + mb) {
         printf("Impossible to extract");
         return;
     }
 
     for(int i = 0; i < nb; i++)
-        for(int j = 0; j < nb ; j++)
-            a[row+i][col+j] = b[i][j];
+        for(int j = 0; j < mb; j++)
+            a[row + i][col + j] = b[i][j];
 }
