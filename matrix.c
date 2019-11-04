@@ -2,6 +2,9 @@
 #include "mpi.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdbool.h>
+
+void print_results(char* fmt, double total, double comm, double exec);
 
 int** alloc_matrix(int n, int m);
 void init_matrix(int n, int** a, int p);
@@ -20,10 +23,11 @@ void Broadcast_cols_A_scatter_cols_b(int n, int** mat_A, int** mat_B);
 void Cannon(int n, int** mat_A, int** mat_B);
 
 int rank, size;
+double total_time, comm_time, comp_time;
 
 int main(int argc, char **argv)
 {
-    int n = 4;
+    int n = 2000;
 
     int** mat_A;
     int** mat_B;
@@ -37,47 +41,93 @@ int main(int argc, char **argv)
     if(rank == 0) {
         init_matrix(n, mat_A, 1);
         
-        printf("matrix A:\n");
+        /* printf("matrix A:\n");
         print_matrix(n, n, mat_A);
-        printf("\n");
+        printf("\n"); */
         
         init_matrix(n, mat_B, 2);
 
-        printf("matrix B:\n");
+        /* printf("matrix B:\n");
         print_matrix(n, n, mat_B);
-        printf("\n");
+        printf("\n"); */
     }
 
-    Scatter_elements_A_broadcast_elements_B(n, mat_A, mat_B);
-    MPI_Barrier(MPI_COMM_WORLD);
-    Scatter_rows_A_broadcast_rows_B(n, mat_A, mat_B);
-    MPI_Barrier(MPI_COMM_WORLD);
-    Scatter_rows_A_broadcast_rows_B_transposed(n, mat_A, mat_B);
-    MPI_Barrier(MPI_COMM_WORLD);
-    Broadcast_cols_A_scatter_cols_b(n, mat_A, mat_B);
-    MPI_Barrier(MPI_COMM_WORLD);
-    Cannon(n, mat_A, mat_B);
+    if(rank == 0) {
+        printf("Matrix size: %d*%d\tProcessors: %d\n\n", n, n, size);
+        printf("Method\t\t\t\t\t\tTotal Time\tComm Time\tExec Time\n");
+        printf("==========================================================================================\n");
+    }
 
+    {
+        total_time = MPI_Wtime();
+        Scatter_elements_A_broadcast_elements_B(n, mat_A, mat_B);
+        
+        print_results("Scatter_elements_A_broadcast_elements_B:\t%lfs\t%lfs\t%lfs\n", MPI_Wtime() - total_time, comm_time, comp_time);
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
+
+    {
+        total_time = MPI_Wtime();
+        Scatter_rows_A_broadcast_rows_B(n, mat_A, mat_B);
+        
+        print_results("Scatter_rows_A_broadcast_rows_B:\t\t%lfs\t%lfs\t%lfs\n", MPI_Wtime() - total_time, comm_time, comp_time);
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
+
+    {
+        total_time = MPI_Wtime();
+        Scatter_rows_A_broadcast_rows_B_transposed(n, mat_A, mat_B);
+        
+        print_results("Scatter_rows_A_broadcast_rows_B_transposed:\t%lfs\t%lfs\t%lfs\n", MPI_Wtime() - total_time, comm_time, comp_time);
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
+
+    {
+        total_time = MPI_Wtime();
+        Broadcast_cols_A_scatter_cols_b(n, mat_A, mat_B);
+        
+        print_results("Broadcast_cols_A_scatter_cols_b:\t\t%lfs\t%lfs\t%lfs\n", MPI_Wtime() - total_time, comm_time, comp_time);
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
+
+    {
+        total_time = MPI_Wtime();
+        Cannon(n, mat_A, mat_B);
+        print_results("Cannons Algorithm:\t\t\t\t%lfs\t%lfs\t%lfs\n", MPI_Wtime() - total_time, comm_time, comp_time);
+    }
+    
     MPI_Finalize();
 
     return 0;
 }
 
+void print_results(char* fmt, double total, double comm, double exec) {
+    if(rank == 0) {
+        printf(fmt, total, comm, exec);
+    }
+}
+
 void Scatter_elements_A_broadcast_elements_B(int n, int** mat_A, int** mat_B) {
     int** local_a = alloc_matrix(n/size, n);
     
+    comm_time = MPI_Wtime();
     MPI_Scatter(&mat_A[0][0], n*n/size, MPI_INT, &local_a[0][0], n*n/size, MPI_INT, 0, MPI_COMM_WORLD);
-
     MPI_Bcast(&mat_B[0][0], n*n, MPI_INT, 0, MPI_COMM_WORLD);
+    comm_time = MPI_Wtime() - comm_time;
 
+    comp_time = MPI_Wtime();
     int** mult = prod_matrix(n/size, n, n, local_a, mat_B);
+    comp_time = MPI_Wtime() - comp_time;
 
     int** gathered_mult = alloc_matrix(n, n);
+
+    comm_time += MPI_Wtime() - comm_time;
     MPI_Gather(&mult[0][0], n*n/size, MPI_INT, &gathered_mult[0][0], n*n/size, MPI_INT, 0, MPI_COMM_WORLD);
-    if(rank == 0) {
+    comm_time = MPI_Wtime() - comm_time;
+    /* if(rank == 0) {
         print_matrix(n, n, gathered_mult);
         printf("\n");
-    }
+    } */
 }
 
 void Scatter_rows_A_broadcast_rows_B(int n, int** mat_A, int** mat_B) {
@@ -87,18 +137,24 @@ void Scatter_rows_A_broadcast_rows_B(int n, int** mat_A, int** mat_B) {
 
     int** local_a = alloc_matrix(n/size, n);
 
+    comm_time = MPI_Wtime();
     MPI_Scatter(&mat_A[0][0], n/size, row_type, &local_a[0][0], n/size, row_type, 0, MPI_COMM_WORLD);
-
     MPI_Bcast(&mat_B[0][0], n, row_type, 0, MPI_COMM_WORLD);
+    comm_time = MPI_Wtime() - comm_time;
 
+    comp_time = MPI_Wtime();
     int** mult = prod_matrix(n/size, n, n, local_a, mat_B);
+    comp_time = MPI_Wtime() - comp_time;
 
     int** gathered_mult = alloc_matrix(n, n);
+
+    comm_time += MPI_Wtime() - comm_time;
     MPI_Gather(&mult[0][0], n/size, row_type, &gathered_mult[0][0], n/size, row_type, 0, MPI_COMM_WORLD);
-    if(rank == 0) {
+    comm_time = MPI_Wtime() - comm_time;
+    /* if(rank == 0) {
         print_matrix(n, n, gathered_mult);
         printf("\n");
-    }
+    } */
 }
 
 void Scatter_rows_A_broadcast_rows_B_transposed(int n, int** mat_A, int** mat_B) {
@@ -108,7 +164,9 @@ void Scatter_rows_A_broadcast_rows_B_transposed(int n, int** mat_A, int** mat_B)
 
     int** local_a = alloc_matrix(n/size, n);
 
+    comm_time = MPI_Wtime();
     MPI_Scatter(&mat_A[0][0], n/size, row_type, &local_a[0][0], n/size, row_type, 0, MPI_COMM_WORLD);
+    comm_time = MPI_Wtime() - comm_time;
 
     int** transed_mat;
     if(rank == 0) {
@@ -117,17 +175,23 @@ void Scatter_rows_A_broadcast_rows_B_transposed(int n, int** mat_A, int** mat_B)
         transed_mat = alloc_matrix(n, n);
     }
 
+    comm_time += MPI_Wtime() - comm_time;
     MPI_Bcast(&transed_mat[0][0], n, row_type, 0, MPI_COMM_WORLD);
+    comm_time = MPI_Wtime() - comm_time;
 
+    comp_time = MPI_Wtime();
     int** mult = pseudo_prod_matrix(n/size, n, n, local_a, transed_mat);
+    comp_time = MPI_Wtime() - comp_time;
 
     int** gathered_mult = alloc_matrix(n, n);
+    comm_time += MPI_Wtime() - comm_time;
     MPI_Gather(&mult[0][0], n/size, row_type, &gathered_mult[0][0], n/size, row_type, 0, MPI_COMM_WORLD);
+    comm_time = MPI_Wtime() - comm_time;
 
-    if(rank == 0) {
+    /* if(rank == 0) {
         print_matrix(n, n, gathered_mult);
         printf("\n");
-    }
+    } */
 }
 
 void Broadcast_cols_A_scatter_cols_b(int n, int** mat_A, int** mat_B) {
@@ -143,17 +207,29 @@ void Broadcast_cols_A_scatter_cols_b(int n, int** mat_A, int** mat_B) {
     MPI_Type_create_resized(recv_col_type, 0, sizeof(int), &recv_col_type);
     MPI_Type_commit(&recv_col_type);
  
+    comm_time = MPI_Wtime();
     MPI_Bcast(&mat_A[0][0], n, send_col_type, 0, MPI_COMM_WORLD);
+    comm_time = MPI_Wtime() - comm_time;
 
     int** local_b = alloc_matrix(n, n/size);
 
+    comm_time += MPI_Wtime() - comm_time;
     MPI_Scatter(&mat_B[0][0], n/size, send_col_type, &local_b[0][0], n/size, recv_col_type, 0, MPI_COMM_WORLD);
+    comm_time = MPI_Wtime() - comm_time;
 
+    comp_time = MPI_Wtime();
     int** mult = prod_matrix(n, n, n/size, mat_A, local_b);
+    comp_time = MPI_Wtime() - comp_time;
 
     int** gathered_mult = alloc_matrix(n, n);
+    comm_time += MPI_Wtime() - comm_time;
     MPI_Gather(&mult[0][0], n/size, recv_col_type, &gathered_mult[0][0], n/size, send_col_type, 0, MPI_COMM_WORLD);
-    if(rank == 0) print_matrix(n, n, gathered_mult);
+    comm_time = MPI_Wtime() - comm_time;
+
+    /* if(rank == 0) {
+        print_matrix(n, n, gathered_mult);
+        printf("\n");
+    } */
 }
 
 void Cannon(int n, int** mat_A, int** mat_B) {
@@ -189,32 +265,47 @@ void Cannon(int n, int** mat_A, int** mat_B) {
     int** local_a = alloc_matrix(n/p, n/p);
     int** local_b = alloc_matrix(n/p, n/p);
 
+    // reset values because we have a loop
+    comp_time = 0;
+    double comp_time_temp = 0;
+    comm_time = 0;
+    double comm_time_accum = 0;
+
     // pre-comp section to init every proc with starting data
     {
         if(rank == 0) {
             for(int i = 0; i < p; i++) {
                 for(int j = 0; j < p; j++) {
+                    comp_time_temp = MPI_Wtime();
                     extract_matrix(n, n, mat_A, n/p, n/p, local_a, i*n/p,  (j-i+p)%p*n/p);
+                    comp_time += MPI_Wtime() - comp_time_temp;
 
                     recvCoords[0] = j;
                     recvCoords[1] = i;
                     MPI_Cart_rank(grid, recvCoords, &recvRank);
 
+                    comm_time_accum = MPI_Wtime();
                     MPI_Request _;
                     MPI_Isend(&local_a[0][0], n*n/(p*p), MPI_INT, recvRank, 1, MPI_COMM_WORLD, &_);
+                    comm_time += MPI_Wtime() - comm_time_accum;
 
+                    comp_time_temp = MPI_Wtime();
                     extract_matrix(n, n, mat_B, n/p, n/p, local_b, (i-j+p)%p*n/p, j*n/p);
+                    comp_time += MPI_Wtime() - comp_time_temp;
+
                     MPI_Cart_rank(grid, recvCoords, &recvRank);
+                    comm_time_accum = MPI_Wtime();
                     MPI_Isend(&local_b[0][0], n*n/(p*p), MPI_INT, recvRank, 2, MPI_COMM_WORLD, &_);
+                    comm_time += MPI_Wtime() - comm_time_accum;
                 }
             }
         }
 
+        comm_time_accum = MPI_Wtime();
         MPI_Request _;
         MPI_Irecv(&local_a[0][0], n*n/(p*p), MPI_INT, 0, 1, MPI_COMM_WORLD, &_);
         MPI_Irecv(&local_b[0][0], n*n/(p*p), MPI_INT, 0, 2, MPI_COMM_WORLD, &_);
-
-        
+        comm_time += MPI_Wtime() - comm_time_accum;
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
@@ -228,37 +319,48 @@ void Cannon(int n, int** mat_A, int** mat_B) {
         MPI_Cart_rank(grid, downCoords, &downRank);
 
         for(int i = 0; i < p; i++) {
+            comp_time_temp = MPI_Wtime();
             local_c = add_matrix(n/p, n/p, local_c, prod_matrix(n/p, n/p, n/p, local_a, local_b));
+            comp_time += MPI_Wtime() - comp_time_temp;
+
+            comm_time_accum = MPI_Wtime();
             MPI_Sendrecv_replace(&local_a[0][0], n*n/(p*p), MPI_INT, leftRank, 1, rightRank, 1, grid, MPI_STATUS_IGNORE);
             MPI_Sendrecv_replace(&local_b[0][0], n*n/(p*p), MPI_INT, upRank, 2, downRank, 2, grid, MPI_STATUS_IGNORE);
+            comm_time += MPI_Wtime() - comm_time_accum;
         }
-
     }
 
     int** result_matrix = alloc_matrix(n, n);
 
     // gather results from all partitions and implant into result_matrix
     {
+        comm_time_accum = MPI_Wtime();
         MPI_Request _;
         MPI_Isend(&local_c[0][0], n*n/(p*p), MPI_INT, 0, rank, MPI_COMM_WORLD, &_);
+        comm_time += MPI_Wtime() - comm_time_accum;
+
         MPI_Barrier(MPI_COMM_WORLD);
         if(rank == 0) {
             for(int i = 0; i < size; i++) {
                 int** local_d = alloc_matrix(n/p, n/p);
+
+                comm_time_accum = MPI_Wtime();
                 MPI_Irecv(&local_d[0][0], n*n/(p*p), MPI_INT, i, i, MPI_COMM_WORLD, &_);
+                comm_time += MPI_Wtime() - comm_time_accum;
                 
                 int coords[2];
                 MPI_Cart_coords(grid, i, size, coords);
+                comp_time_temp = MPI_Wtime();
                 implant_matrix(n, n, result_matrix, n/p, n/p, local_d, coords[1]*(n/p), coords[0]*(n/p));
+                comp_time += MPI_Wtime() - comp_time_temp;
             }
         }
     }
 
-    if(rank == 0) {
+    /* if(rank == 0) {
         printf("\n");
         print_matrix(n, n, result_matrix);
-    }
-
+    } */
 }
 
 int** alloc_matrix(int rows, int cols) {
